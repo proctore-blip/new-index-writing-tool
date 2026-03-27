@@ -1392,6 +1392,8 @@ body{
       <div id="manual-char-count" style="font-size:11px;color:var(--txt2);text-align:right;margin-top:3px;margin-bottom:8px">0 characters</div>
       <button class="t-set-btn" onclick="setManualPrompt()">&#10003; Set prompt &amp; genre for the class</button>
       <div id="active-info" style="margin-top:8px"></div>
+      <button class="t-set-btn" onclick="copyStudentLink()" style="margin-top:8px;background:var(--blue)">&#128279; Copy student link</button>
+      <div id="student-link-msg" style="font-size:11px;color:var(--green);margin-top:5px"></div>
       <hr class="divider">
       <div class="sec-title" style="margin-bottom:.75rem">Google Sheet — auto submission</div>
       <p style="font-size:12px;color:var(--txt2);margin-bottom:8px;line-height:1.5">Paste your Apps Script Web App URL here. Student work will be sent automatically when they submit.</p>
@@ -2535,18 +2537,30 @@ function submitWriting(){
     if(subs.length&&subs[0].firstDraft) firstDraft=subs[0].firstDraft||finalDraft;
   }
   if(!firstDraft.trim()) firstDraft=finalDraft;
+  var err=$id('refine-err');
   if(finalDraft.trim().length<20){
-    var err=$id('refine-err');
     if(err)err.innerHTML='<div class="err-box">Please complete your draft in the Draft stage before submitting.</div>';
     return;
   }
-  var err=$id('refine-err');if(err)err.innerHTML='';
   if(!API_KEY){
     if(err)err.innerHTML='<div class="err-box">No API key set. Ask your teacher to add the Anthropic API key in the Teacher panel.</div>';
     return;
   }
+  // Safeguard checks
+  if(!canSubmit()) return;
+  if(err)err.innerHTML='';
+  _lastSubmitTime = Date.now();
+  // Queue the submission if one is already in progress
+  if(_submitBusy){
+    var loadEl=$id('loading-msg');
+    hide('writing-screen');show('loading-screen');
+    if(loadEl)loadEl.textContent='Waiting for another submission to complete…';
+    _submitQueue.push(function(){ _doSubmit(firstDraft, finalDraft); });
+    return;
+  }
   hide('writing-screen');show('loading-screen');
 
+  _submitBusy = true;
   var stageLabels=['Characters','Dialogue','Descriptive Scenes','Capitals','Punctuation','Spelling','Said Substitution','Overused Words'];
   var stageEdits={};
   (pipelineDone_flags||[]).forEach(function(done,i){stageEdits[i]=done?stageLabels[i]+' (completed)':'(not completed)';});
@@ -2566,16 +2580,16 @@ function submitWriting(){
     +'Return ONLY valid JSON: {"scores":{"ideas":<1-4>,"organization":<1-4>,"language_use":<1-4>,"conventions":<1-4>},"feedback":{"ideas":"<feedback>","organization":"<feedback>","language_use":"<feedback>","conventions":"<feedback>"},"overall_message":"<warm sentence max 20 words>","suggestions":[{"area":"<criterion>","tip":"<tip>"},{"area":"<criterion>","tip":"<tip>"}],"improved_example":"Original: \"<weak>\" \u2192 Improved: \"<vivid>\""}';
 
   function attemptSubmit(retriesLeft){
-    fetch('https://api.anthropic.com/v1/messages',{
+    fetchWithTimeout('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':API_KEY,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
       body:JSON.stringify({
-        model:'claude-sonnet-4-20250514',
+        model:'claude-haiku-4-5-20251001',
         max_tokens:1500,
         system:sys,
         messages:[{role:'user',content:'Genre: '+currentGenre+'\nPrompt: '+(fixedPrompt||'(self-write)')+'\nRevision steps: '+Object.keys(stageEdits).map(function(k){return 'Step '+(parseInt(k)+1)+': '+stageEdits[k];}).join(', ')+'\nFirst draft:\n'+firstDraft+'\nFinal draft:\n'+finalDraft}]
       })
-    })
+    }, API_TIMEOUT)
     .then(function(r){return r.json();})
     .then(function(data){
       if(data.error){
@@ -2591,12 +2605,17 @@ function submitWriting(){
       }
       var raw=(data.content||[]).map(function(b){return b.text||'';}).join('').trim().replace(/```json|```/g,'').trim();
       var result=JSON.parse(raw);
+      incrementDailyCap();
+      _submitBusy = false;
       showResults(result, firstDraft, finalDraft, stageEdits);
+      if(_submitQueue.length){ setTimeout(function(){ var next=_submitQueue.shift(); next(); }, 1000); }
     })
     .catch(function(err){
+      _submitBusy = false;
+      if(_submitQueue.length){ setTimeout(function(){ var next=_submitQueue.shift(); next(); }, 1000); }
       hide('loading-screen');show('writing-screen');
       var errEl=$id('refine-err');
-      if(errEl)errEl.innerHTML='<div class="err-box">Something went wrong: '+err.message+'. Please try again.</div>';
+      if(errEl)errEl.innerHTML='<div class="err-box">'+err.message+'</div>';
     });
   }
   attemptSubmit(3);
@@ -3118,6 +3137,99 @@ function buildAnchorChart(){
     +'<iframe src="'+url+'" allowfullscreen loading="lazy" title="Anchor Chart" style="position:absolute;top:0;left:0;width:100%;height:100%;border:none"></iframe>'
     +'</div>'
     +'<a href="'+url.replace('/embed?','/pub?')+'" target="_blank" style="display:block;width:100%;margin-top:6px;padding:7px;font-size:12px;font-weight:600;border-radius:var(--r);border:1.5px solid var(--border2);background:var(--surface);color:var(--txt2);cursor:pointer;font-family:var(--font-body);text-align:center;text-decoration:none">&#128269; Open full screen</a>';
+}
+
+
+function copyStudentLink(){
+  var genre  = currentGenre || localStorage.getItem('ww_genre') || '';
+  var prompt = fixedPrompt  || localStorage.getItem('ww_fixed_prompt') || '';
+  if(!genre || !prompt){
+    var msg=$id('student-link-msg');
+    if(msg){msg.textContent='Set a genre and prompt first.';msg.style.color='var(--coral)';}
+    return;
+  }
+  // Build URL with params
+  var base = window.location.href.split('?')[0];
+  var url  = base + '?genre=' + encodeURIComponent(genre) + '&prompt=' + encodeURIComponent(prompt);
+  navigator.clipboard.writeText(url).then(function(){
+    var msg=$id('student-link-msg');
+    if(msg){msg.textContent='\u2713 Link copied! Share this with students.';msg.style.color='var(--green)';}
+    setTimeout(function(){if(msg)msg.textContent='';}, 3000);
+  }).catch(function(){
+    // Fallback
+    var ta=document.createElement('textarea');
+    ta.value=url;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();document.execCommand('copy');
+    document.body.removeChild(ta);
+    var msg=$id('student-link-msg');
+    if(msg){msg.textContent='\u2713 Link copied!';msg.style.color='var(--green)';}
+    setTimeout(function(){if(msg)msg.textContent='';}, 3000);
+  });
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// CLASSROOM SAFEGUARDS
+// ══════════════════════════════════════════════════════════════════════════
+
+var _submitQueue   = [];      // pending submissions
+var _submitBusy    = false;   // is a submission in progress?
+var _lastSubmitTime = 0;      // timestamp of last submission attempt
+var SUBMIT_COOLDOWN = 30000;  // 30 seconds between submissions
+var DAILY_CAP       = 3;      // max submissions per student per day
+var API_TIMEOUT     = 25000;  // 25 second timeout
+
+function checkDailyCap(){
+  var today = new Date().toDateString();
+  var key   = 'ww_daily_' + (studentName||'anon') + '_' + today;
+  var count = parseInt(localStorage.getItem(key)||'0');
+  return count;
+}
+
+function incrementDailyCap(){
+  var today = new Date().toDateString();
+  var key   = 'ww_daily_' + (studentName||'anon') + '_' + today;
+  var count = parseInt(localStorage.getItem(key)||'0') + 1;
+  localStorage.setItem(key, count);
+  // Clean up old keys (keep storage tidy)
+  try{
+    Object.keys(localStorage).forEach(function(k){
+      if(k.startsWith('ww_daily_') && k.indexOf(today)===-1)
+        localStorage.removeItem(k);
+    });
+  }catch(e){}
+}
+
+function canSubmit(){
+  var err = $id('refine-err');
+  // Cooldown check
+  var now = Date.now();
+  if(now - _lastSubmitTime < SUBMIT_COOLDOWN){
+    var secs = Math.ceil((SUBMIT_COOLDOWN - (now - _lastSubmitTime)) / 1000);
+    if(err) err.innerHTML = '<div class="err-box">Please wait ' + secs + ' seconds before submitting again.</div>';
+    return false;
+  }
+  // Daily cap check
+  if(checkDailyCap() >= DAILY_CAP){
+    if(err) err.innerHTML = '<div class="err-box">You\'ve reached the maximum submissions for today (' + DAILY_CAP + '). Ask your teacher if you need to resubmit.</div>';
+    return false;
+  }
+  return true;
+}
+
+function fetchWithTimeout(url, options, timeoutMs){
+  return new Promise(function(resolve, reject){
+    var timer = setTimeout(function(){
+      reject(new Error('Request timed out. The API is busy — please try again in a moment.'));
+    }, timeoutMs);
+    fetch(url, options).then(function(r){
+      clearTimeout(timer);
+      resolve(r);
+    }).catch(function(e){
+      clearTimeout(timer);
+      reject(e);
+    });
+  });
 }
 
 
