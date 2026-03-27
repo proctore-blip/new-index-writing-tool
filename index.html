@@ -1419,7 +1419,19 @@ body{
   </div>
 </div>
 
-<script>var API_KEY = '';
+<script>
+// ── Read genre + prompt from URL (student share link) ─────────────────────
+(function(){
+  try {
+    var params = new URLSearchParams(window.location.search);
+    var urlGenre  = params.get('genre');
+    var urlPrompt = params.get('prompt');
+    if(urlGenre)  localStorage.setItem('ww_genre',  urlGenre);
+    if(urlPrompt) localStorage.setItem('ww_fixed_prompt', urlPrompt);
+  } catch(e){}
+})();
+
+var API_KEY = '';
 var CREATIVE_PROMPTS  = [
   'If your parents spent one day living in your shoes, how would their perspective change?',
   'Bada-BOOM-Bada-BANG! You get to go back in time! What time period will you visit?',
@@ -3234,7 +3246,7 @@ function fetchWithTimeout(url, options, timeoutMs){
 
 
 // ── Startup ────────────────────────────────────────────────────────────────
-API_KEY = localStorage.getItem('ww_api_key')||'';
+API_KEY = localStorage.getItem('ww_api_key')||'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';
 buildWordLists();
 acSetChart('Writing');
 var _sg = localStorage.getItem('ww_genre');
